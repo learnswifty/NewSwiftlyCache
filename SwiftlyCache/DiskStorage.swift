@@ -481,14 +481,20 @@ class DiskStorage<Value:Codable>{
     @param key: value关联的键
     @return 查询成功返回true,否则返回false
      */
-    func dbIsExistsForKey(forKey key:String) -> Bool{
-        let sql = "select count(key) from detailed where key = ?1"
-        guard let stmt = dbPrepareStmt(sql: sql) else { return false }
-        sqlite3_bind_text(stmt, 1, key.cString(using: .utf8), -1, nil)
-        guard sqlite3_step(stmt) == SQLITE_ROW else{
+    func dbIsExistsForKey(forKey key: String) -> Bool {
+        let sql = "SELECT COUNT(*) FROM detailed WHERE key = ?1"
+        guard let stmt = dbPrepareStmt(sql: sql) else {
+            print("Error preparing statement for dbIsExistsForKey")
             return false
         }
-        return Int(sqlite3_column_int(stmt, 0)) > 0
+        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT)
+        guard sqlite3_step(stmt) == SQLITE_ROW else {
+            print("Error executing query for dbIsExistsForKey")
+            return false
+        }
+        let count = sqlite3_column_int(stmt, 0)
+        return count > 0
     }
     
     /**
@@ -533,16 +539,34 @@ class DiskStorage<Value:Codable>{
      移除key指定数据
      @return 成功返回true，否则返回false
      */
-    func dbRemoveItem(key:String)->Bool{
-        //删除sql语句
-        let sql = "delete from detailed where key = ?1";
-        guard let stmt = dbPrepareStmt(sql: sql) else { return false}
-        sqlite3_bind_text(stmt, 1, key.cString(using: .utf8), -1, nil)
-        //step执行
-        guard sqlite3_step(stmt) == SQLITE_DONE else{
-            print("sqlite remove data error \(String(describing: String(validatingUTF8: sqlite3_errmsg(db))))")
+    func dbRemoveItem(key: String) -> Bool {
+        if sqlite3_exec(db, "BEGIN TRANSACTION", nil, nil, nil) != SQLITE_OK {
+            print("Failed to begin transaction")
             return false
         }
+        defer {
+            if sqlite3_exec(db, "END TRANSACTION", nil, nil, nil) != SQLITE_OK {
+                print("Failed to end transaction")
+            }
+        }
+        let deleteQuery = "DELETE FROM detailed WHERE key = ?;"
+        var deleteStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, deleteQuery, -1, &deleteStatement, nil) == SQLITE_OK else {
+            print("Error preparing delete statement.")
+            return false
+        }
+        defer {
+            sqlite3_finalize(deleteStatement)
+        }
+        guard sqlite3_bind_text(deleteStatement, 1, (key as NSString).utf8String, -1, nil) == SQLITE_OK else {
+            print("Error binding text value.")
+            return false
+        }
+        guard sqlite3_step(deleteStatement) == SQLITE_DONE else {
+            print("Error deleting item.")
+            return false
+        }
+        print("Item deleted successfully.")
         return true
     }
     
