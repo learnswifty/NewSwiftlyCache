@@ -193,34 +193,28 @@ class DiskStorage<Value:Codable>{
     /**
      关闭数据库
      */
-    @discardableResult
-func dbClose() -> Bool {
-    guard db != nil else { return true }
-    
-    let result = sqlite3_close(db)
-    if result == SQLITE_BUSY || result == SQLITE_LOCKED {
+   @discardableResult
+    func dbClose()->Bool{
         var isCont = true
-        var stmt: OpaquePointer?
-        
-        while isCont {
-            stmt = sqlite3_next_stmt(db, nil)
-            if let validStmt = stmt {
-                sqlite3_finalize(validStmt)
-            } else {
-                isCont = false
+        guard db == nil else{
+            let result = sqlite3_close(db)
+            if result == SQLITE_BUSY || result == SQLITE_LOCKED{
+                var stmt:OpaquePointer?
+                while isCont {
+                    stmt = sqlite3_next_stmt(db, nil)
+                    if stmt != nil{
+                        sqlite3_finalize(stmt)
+                    }else{ isCont = false }
+                }
+            }else if result != SQLITE_OK{
+                print("sqlite close failed \(String(describing: String(validatingUTF8: sqlite3_errmsg(db))))")
+                return false
             }
+            db = nil
+            return true
         }
+        return true
     }
-    
-    if result != SQLITE_OK {
-        let errorMsg = String(validatingUTF8: sqlite3_errmsg(db)) ?? "Unknown error"
-        print("sqlite close failed: \(errorMsg)")
-        return false
-    }
-    
-    db = nil
-    return true
-}
 
     
     /**
