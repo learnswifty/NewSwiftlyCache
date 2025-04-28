@@ -341,6 +341,7 @@ extension DiskCache:CacheAware{
     public func removeAll(){
         semaphoreSignal.wait()
         storage.removeAll()
+        keys.removeAll() // Clear keys to maintain consistency
         semaphoreSignal.signal()
     }
     
