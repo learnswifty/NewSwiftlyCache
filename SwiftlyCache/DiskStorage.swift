@@ -33,33 +33,33 @@ fileprivate extension String {
     }
 }
 
-class DiskStorage<Value:Codable>{
-       let dbFileName = "default.sqlite"
-       let dbWalFileName = "default.sqlite-wal"
-       let dbShmFileName = "default.sqlite-shm"
-       let foldername = "data"
-       var filePath:String
-       var dbPath:String
-       var db:OpaquePointer?
-       let dataMaxSize = 1024 * 20
-       var dbStmtCache:Dictionary = [String:OpaquePointer]()
-       let fileManager:FileManager = FileManager.default
+class DiskStorage<Value: Codable> {
+    let dbFileName = "default.sqlite"
+    let dbWalFileName = "default.sqlite-wal"
+    let dbShmFileName = "default.sqlite-shm"
+    let foldername = "data"
+    var filePath: String
+    var dbPath: String
+    var db: OpaquePointer?
+    let dataMaxSize = 1024 * 20
+    var dbStmtCache: [String: OpaquePointer] = [:]
+    let fileManager: FileManager = FileManager.default
        init(path:String) {
         filePath = path
         dbPath = filePath
-        filePath = filePath + ("/\(foldername)")
+        filePath = filePath + "/\(foldername)"
     }
     
-      convenience init(currentPath:String){
+    convenience init(currentPath: String) {
         self.init(path: currentPath)
-        guard createDirectory() else{ return }
-        guard dbOpen() else{ return }
-        guard dbCreateTable() else{ return }
+        guard createDirectory() else { return }
+        guard dbOpen() else { return }
+        guard dbCreateTable() else { return }
     }
     
     deinit {
-        dbClose()
-    }
+            _ = dbClose() // Ensure cleanup on deinit
+        }
     
     /**
      md5
@@ -147,15 +147,51 @@ class DiskStorage<Value:Codable>{
     /**
      移除全部文件数据
      */
-    func removeAll(){
-        if !dbRemoveAllItem(){ return }
-        if dbStmtCache.count > 0{ dbStmtCache.removeAll(keepingCapacity: true) }
-        if !dbClose() { return }
-        if ((try? fileManager.removeItem(atPath: self.filePath)) == nil) { return }
-        if !createDirectory() { return }
-        if !dbOpen() { return }
-        if !dbCreateTable() { return }
-    }
+    func removeAll() {
+            // Step 1: Remove all items from the database
+            if !dbRemoveAllItem() {
+                print("Failed to remove all items from database")
+                return
+            }
+
+            // Step 2: Remove cached statements
+            if !dbStmtCache.isEmpty {
+                for (_, stmt) in dbStmtCache {
+                    sqlite3_finalize(stmt)
+                }
+                dbStmtCache.removeAll()
+            }
+
+            // Step 3: Remove the directory and files
+            if fileManager.fileExists(atPath: filePath) {
+                do {
+                    try fileManager.removeItem(atPath: filePath)
+                } catch {
+                    print("Failed to remove directory: \(error.localizedDescription)")
+                    return
+                }
+            }
+
+            // Step 4: Close the database after file removal
+            if !dbClose() {
+                print("Failed to close database during removeAll")
+                return
+            }
+
+            // Step 5: Recreate directory and reopen database
+            if !createDirectory() {
+                print("Failed to recreate directory")
+                return
+            }
+            if !dbOpen() {
+                print("Failed to reopen database")
+                return
+            }
+            if !dbCreateTable() {
+                print("Failed to recreate table")
+                return
+            }
+        }
     
     /**
      获取文件大小
@@ -193,29 +229,36 @@ class DiskStorage<Value:Codable>{
     /**
      关闭数据库
      */
-   @discardableResult
-    func dbClose()->Bool{
-        var isCont = true
-        guard db == nil else{
+    @discardableResult
+        func dbClose() -> Bool {
+            guard db != nil else { return true } // Already closed
+
+            // Finalize all cached statements
+            for (_, stmt) in dbStmtCache {
+                sqlite3_finalize(stmt)
+            }
+            dbStmtCache.removeAll()
+
+            // Finalize any remaining active statements
+            while let stmt = sqlite3_next_stmt(db, nil) {
+                sqlite3_finalize(stmt)
+            }
+
+            // Force a full WAL checkpoint
+            if sqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_FULL, nil, nil) != SQLITE_OK {
+                print("Failed to checkpoint WAL: \(sqlite3_errmsg(db).map { String(cString: $0) } ?? "Unknown error")")
+            }
+
+            // Close the database
             let result = sqlite3_close(db)
-            if result == SQLITE_BUSY || result == SQLITE_LOCKED{
-                var stmt:OpaquePointer?
-                while isCont {
-                    stmt = sqlite3_next_stmt(db, nil)
-                    if stmt != nil{
-                        sqlite3_finalize(stmt)
-                    }else{ isCont = false }
-                }
-            }else if result != SQLITE_OK{
-                print("sqlite close failed \(String(describing: String(validatingUTF8: sqlite3_errmsg(db))))")
+            if result != SQLITE_OK {
+                print("sqlite close failed: \(sqlite3_errmsg(db).map { String(cString: $0) } ?? "Unknown error")")
                 return false
             }
+
             db = nil
             return true
         }
-        return true
-    }
-
     
     /**
      创建数据库表
@@ -280,20 +323,21 @@ class DiskStorage<Value:Codable>{
      根据sql语句查询对应的stmt
      @param sql: sql语句
      */
-    func dbPrepareStmt(sql:String) -> OpaquePointer?{
-        guard sql.count != 0 || dbStmtCache.count != 0 else{ return nil }
-        var stmt:OpaquePointer? = dbStmtCache[sql]
-        guard stmt != nil else{
-            if sqlite3_prepare_v2(db, sql.cString(using: .utf8), -1, &stmt, nil) != SQLITE_OK{
-                print("sqlite stmt prepare error \(String(describing: String(validatingUTF8: sqlite3_errmsg(db))))")
+    func dbPrepareStmt(sql: String) -> OpaquePointer? {
+            guard !sql.isEmpty else { return nil }
+            if let cachedStmt = dbStmtCache[sql] {
+                sqlite3_reset(cachedStmt)
+                return cachedStmt
+            }
+
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, sql.cString(using: .utf8), -1, &stmt, nil) != SQLITE_OK {
+                print("sqlite stmt prepare error: \(sqlite3_errmsg(db).map { String(cString: $0) } ?? "Unknown error")")
                 return nil
             }
             dbStmtCache[sql] = stmt
             return stmt
         }
-        sqlite3_reset(stmt)
-        return stmt
-    }
     
     /**
      根据指定key获取对应的数据并更新最后访问时间
