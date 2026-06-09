@@ -223,6 +223,7 @@ class DiskStorage<Value: Codable> {
      */
     func dbOpen() ->Bool{
         guard sqlite3_open(dbPath + ("/\(dbFileName)"), &db) == SQLITE_OK else{ return false }
+        sqlite3_busy_timeout(db, 500)
         return true
     }
     
@@ -480,7 +481,13 @@ class DiskStorage<Value: Codable> {
         let sql = "delete from detailed where last_access_time < ?1;"
         guard let stmt = dbPrepareStmt(sql: sql) else { return false }
         sqlite3_bind_int(stmt, 1, Int32(time))
-        guard sqlite3_step(stmt) == SQLITE_DONE else{
+        var result = sqlite3_step(stmt)
+        if result == SQLITE_BUSY || result == SQLITE_LOCKED {
+            sqlite3_reset(stmt)
+            sqlite3_bind_int(stmt, 1, Int32(time))
+            result = sqlite3_step(stmt)
+        }
+        guard result == SQLITE_DONE else{
             print("sqlite remove expired data error \(String(describing: String(validatingUTF8: sqlite3_errmsg(db))))")
             return false
         }
